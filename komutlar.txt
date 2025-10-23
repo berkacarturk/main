@@ -1,0 +1,16 @@
+ 1009  scp touchscreen.pyizi@192.168.1.42:/home
+ 1010  scp touchscreen.py izunar@172.1.28.14:Home
+ 1011  scp touchscreen.py izunar@172.1.28.14:home
+ 1012  scp touchscreen.py izunar@172.1.28.14:izunar
+ 1013  scp touchscreen.py izunar@172.1.28.14:izunar
+ 1014  scp touchscreen.py izunar@172.1.28.14:/Home
+ 1015  scp touchscreen.py izunar@172.1.28.14:Home
+ 1016  scp touchscreen.py izunar@172.1.28.14:Home
+ 1017  scp touchscreen.py izunar@172.1.28.14:home
+ 1018  scp touchscreen.py izunar@172.1.28.14:home/
+ 1019  scp touchscreen.py izunar@172.1.28.14:/home
+ 1020  clear
+ 1021  history | grep <scp>
+ 1022  history | grep scp
+ 1023  history | grep izunar
+ 1024  history

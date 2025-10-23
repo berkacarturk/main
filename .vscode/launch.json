@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Touchscreen App",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/touchscreen.py",
+            "console": "integratedTerminal",
+            "python": "/opt/anaconda3/envs/kivy_env/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}
