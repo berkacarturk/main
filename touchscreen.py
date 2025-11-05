@@ -846,38 +846,21 @@ class MainScreen(FloatLayout):
             self.add_widget(btn)
         self.mult_buttons[0].state = 'down'
 
-        # PROTECTED AXIS BUTTONS - Fn ile korumalı unlock butonları
-        axis_labels = ['Unlock X', 'Unlock Y', 'Unlock Z']
-        self.axis_buttons = []
-        for i, label in enumerate(axis_labels):
-            axis_btn = ColoredToggleButton(
-                text=label,
-                size=(100, 40),
-                pos=(RIBP, 260 + i * 80),
-                font_size=18,
-                disabled=True  # Başlangıçta disabled
-            )
-            # Disabled görünümü için gri renk
-            axis_btn.default_color = (0.6, 0.6, 0.6, 1)
-            axis_btn.active_color = (0.6, 0.6, 0.6, 1)
-            axis_btn.background_color = (0.6, 0.6, 0.6, 1)
-            axis_btn.bind(state=self.on_axis_toggle)
-            self.axis_buttons.append(axis_btn)
-            self.add_widget(axis_btn)
-
+        # ENABLE STATUS LABELS - Motor Arduino'dan gelen enable durumlarını göster
+        # Butonlar YOK - Sadece görüntüleme
         self.lock_status_labels = []
         axis_names = ['X', 'Y', 'Z']
         for i, axis in enumerate(axis_names):
             lbl = Label(
-                text=f"{axis}: unlocked",
-                font_size=16,
+                text=f"{axis}: 🔓 Enabled",
+                font_size=18,
                 font_name='RobotoMono-Regular',
-                pos=(RIBP, 238 + i * 80),
+                pos=(RIBP, 280 + i * 60),
                 size_hint=(None, None),
-                size=(100, 30),
-                color=(1, 1, 1, 1),
+                size=(150, 40),
+                color=(0.5, 1, 0.5, 1),  # Yeşil - enabled
                 halign='center',
-                text_size=(100, 30)
+                text_size=(150, 40)
             )
             self.lock_status_labels.append(lbl)
             self.add_widget(lbl)
@@ -1229,8 +1212,34 @@ class MainScreen(FloatLayout):
         """Motor Arduino'sundan gelen feedback mesajlarını işle"""
         print(f"⚙️  Motor feedback işleniyor: {feedback_line}")
         
+        # ENABLE_STATUS mesajları - External switchlerden gelen enable durumları
+        if feedback_line.startswith('ENABLE_STATUS:'):
+            try:
+                # Format: ENABLE_STATUS:X=1,Y=0,Z=1
+                enable_data = feedback_line.replace('ENABLE_STATUS:', '')
+                enables = {}
+                for item in enable_data.split(','):
+                    key, value = item.split('=')
+                    enables[key] = value == '1'
+                
+                # Label'ları güncelle - Enable=1 -> Enabled (yeşil), Enable=0 -> Disabled (kırmızı)
+                axis_names = ['X', 'Y', 'Z']
+                for i, axis in enumerate(axis_names):
+                    is_enabled = enables.get(axis, False)
+                    if is_enabled:
+                        self.lock_status_labels[i].text = f"{axis}: 🔓 Enabled"
+                        self.lock_status_labels[i].color = (0.5, 1, 0.5, 1)  # Yeşil
+                    else:
+                        self.lock_status_labels[i].text = f"{axis}: 🔒 Disabled"
+                        self.lock_status_labels[i].color = (1, 0.3, 0.3, 1)  # Kırmızı
+                
+                print(f"🔐 Enable durumları güncellendi: X={enables.get('X')}, Y={enables.get('Y')}, Z={enables.get('Z')}")
+                
+            except Exception as e:
+                print(f"❌ ENABLE_STATUS parse hatası: {e}")
+        
         # Switch durumları (Admin kontrolü kaldırıldı)
-        if feedback_line.startswith('SWITCHES:'):
+        elif feedback_line.startswith('SWITCHES:'):
             try:
                 switches_data = feedback_line.replace('SWITCHES:', '')
                 switches = {}
@@ -1600,12 +1609,6 @@ class MainScreen(FloatLayout):
             self.reset_max_btn.disabled = False 
             self.reset_max_btn.background_color = (0.8, 0.2, 0.2, 1)  # Kırmızı
             
-            # Axis butonlarını etkinleştir
-            for btn in self.axis_buttons:
-                btn.disabled = False
-                btn.default_color = (0.545, 0.133, 0.196, 1)  # Normal renk
-                btn.active_color = (0.545, 0.133, 0.196, 1)
-                btn.background_color = (0.545, 0.133, 0.196, 1)
         else:
             self.fn_key_pressed = False
             self.fn_status_label.text = 'Fn: OFF'
@@ -1617,14 +1620,6 @@ class MainScreen(FloatLayout):
             
             self.reset_max_btn.disabled = True
             self.reset_max_btn.background_color = (0.6, 0.6, 0.6, 1)  # Gri
-            
-            # Axis butonlarını devre dışı bırak
-            for btn in self.axis_buttons:
-                btn.disabled = True
-                btn.state = 'normal'  # Toggle durumunu sıfırla
-                btn.default_color = (0.6, 0.6, 0.6, 1)  # Gri
-                btn.active_color = (0.6, 0.6, 0.6, 1)
-                btn.background_color = (0.6, 0.6, 0.6, 1)
 
     def enable_all_motors(self):
         """Tüm motorları enable yap"""
@@ -1724,36 +1719,6 @@ class MainScreen(FloatLayout):
             btn.state = 'normal'
         instance.state = 'down'
         self.send_to_arduino(f"S{instance.text}")
-
-    def on_axis_toggle(self, instance, value):
-        """Axis unlock/lock toggle - Sadece Fn tuşu basılıyken çalışır"""
-        # ADMIN MODE KONTROLÜ
-        if not self.admin_mode_active:
-            print(f"❌ ADMIN MODU KAPALI - Axis toggle engellendi")
-            instance.state = 'normal'  # Toggle durumunu geri al
-            return
-        
-        if not self.fn_key_pressed:
-            instance.state = 'normal'  # Toggle durumunu geri al
-            return
-            
-        if value == 'down':
-            axis = instance.text.replace("Unlock ", "").replace("Lock ", "")
-            instance.text = f"Lock {axis}"
-            self.axis_locked[axis] = True  # Lock durumunu güncelle
-            self.send_to_arduino(f"l{axis}")
-            print(f"🔒 {axis} ekseni lock edildi")
-        else:
-            axis = instance.text.replace("Lock ", "").replace("Unlock ", "")
-            instance.text = f"Unlock {axis}"
-            self.axis_locked[axis] = False  # Unlock durumunu güncelle
-            self.send_to_arduino(f"ul{axis}")
-            print(f"🔓 {axis} ekseni unlock edildi")
-            
-        # Lock status labellarını güncelle
-        for i, ax in enumerate(['X', 'Y', 'Z']):
-            status = "locked" if self.axis_locked[ax] else "unlocked"
-            self.lock_status_labels[i].text = f"{ax}: {status}"
 
     def send_to_arduino(self, message):
         """Arduino'ya mesaj gönder - Motor komutları motor Arduino'suna, diğerleri sensör Arduino'suna"""

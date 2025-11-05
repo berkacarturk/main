@@ -84,17 +84,25 @@ void loop() {
   
   // Sürekli hareket kontrolü
   continuousMotorControl();
+  
+  // Enable durumu ve admin durumunu periyodik olarak gönder (her 1 saniyede bir)
+  static unsigned long lastStatusReport = 0;
+  if (millis() - lastStatusReport > 1000) {
+    reportEnableStatus();
+    reportAdminStatus();
+    lastStatusReport = millis();
+  }
 }
 
 void continuousMotorControl() {
+  // External switchlerden enable durumunu sürekli oku (INPUT_PULLUP)
+  // Switch kapalı = LOW = GND'ye bağlı = motor ENABLED
+  // Switch açık = HIGH = pull-up ile VCC = motor DISABLED
+  xAxisEnabled = (digitalRead(xEnaPin) == LOW);
+  yAxisEnabled = (digitalRead(yEnaPin) == LOW);
+  zAxisEnabled = (digitalRead(zEnaPin) == LOW);
+  
   // X ekseni sürekli hareket
- int admin = digitalRead(AdminPin);
- if (admin == HIGH){
-  Serial.println ("admin modu açık");
-}
-  else{
-  Serial.println("admin modu kapalı");
- }
   if (xMotorRunning) {
     analogWrite(xPulPin, motorSpeed);  // Pulse pin her zaman yanar
     if (xDirection) {
@@ -135,9 +143,7 @@ void continuousMotorControl() {
   
   // Kısa delay
   delay(1);
-  }
-
-void updateMotorSpeeds() {
+}void updateMotorSpeeds() {
   // Çalışan motorların hızını anında güncelle
   if (xMotorRunning) {
     analogWrite(xPulPin, motorSpeed);  // Pulse pin her zaman
@@ -389,6 +395,27 @@ void moveMotor(char axis, bool positive, int steps) {
   Serial.print(positive ? "+" : "-");
   Serial.print("_STEPS:");
   Serial.println(steps);
+}
+
+void reportEnableStatus() {
+  // Enable switch durumlarını Python'a gönder
+  Serial.print("ENABLE_STATUS:");
+  Serial.print("X=");
+  Serial.print(xAxisEnabled ? "1" : "0");
+  Serial.print(",Y=");
+  Serial.print(yAxisEnabled ? "1" : "0");
+  Serial.print(",Z=");
+  Serial.println(zAxisEnabled ? "1" : "0");
+}
+
+void reportAdminStatus() {
+  // Admin switch durumunu oku ve Python'a gönder
+  int admin = digitalRead(AdminPin);
+  if (admin == HIGH) {
+    Serial.println("admin modu açık");
+  } else {
+    Serial.println("admin modu kapalı");
+  }
 }
 
 void sendFeedback() {
