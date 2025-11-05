@@ -180,22 +180,62 @@ class ArrowButton(Button):
         self.bind(on_release=self.on_arrow_release)  # Release event'i bağla
 
     def on_arrow_press(self, instance):
-        # Ana ekrana erişip veri gönder
+        # Ana ekrana erişip lock durumunu kontrol et
         parent = self.parent
         while parent and not hasattr(parent, 'send_to_arduino'):
             parent = parent.parent
         if parent and hasattr(parent, 'send_to_arduino'):
+            # ADMIN MODE KONTROLÜ - Admin modu kapalıysa hiçbir komut gönderme
+            if hasattr(parent, 'admin_mode_active') and not parent.admin_mode_active:
+                print(f"❌ ADMIN MODU KAPALI - {self.text} komutu engellendi")
+                return
+            
+            # Hangi eksenin butonu olduğunu belirle
+            axis = self.text[0]  # X+, X-, Y+, Y-, Z+, Z- formatından eksen harfini al
+            
+            # NOT: Lock kontrolü KALDIRILDI - motorlar her zaman çalışmalı
+            # Lock durumu sadece UI'da gösterilir, motor hareketini ETKİLEMEZ
+            
+            # Normal şekilde komut gönder
+            print(f"✅ {self.text} komutu gönderiliyor")
+            # Debug: Motor Arduino durumunu kontrol et
+            if hasattr(parent, 'motor_arduino') and parent.motor_arduino:
+                print(f"🔌 Motor Arduino bağlı: {parent.motor_arduino.port}")
+            else:
+                print(f"❌ Motor Arduino bağlı değil!")
             parent.send_to_arduino(f"{self.text}")
+
+    def reset_button_color(self):
+        """Buton rengini normale döndür"""
+        with self.canvas.before:
+            from kivy.graphics import Color
+            Color(0.2, 0.4, 0.7)  # Modern mavi (normal renk)
 
     def on_arrow_release(self, instance):
         parent = self.parent
         while parent and not hasattr(parent, 'send_to_arduino'):
             parent = parent.parent
         if parent and hasattr(parent, 'send_to_arduino'):
+            # ADMIN MODE KONTROLÜ - Admin modu kapalıysa hiçbir komut gönderme
+            if hasattr(parent, 'admin_mode_active') and not parent.admin_mode_active:
+                print(f"❌ ADMIN MODU KAPALI - STOP komutu engellendi")
+                return
+            
+            # Hangi eksenin butonu olduğunu belirle
+            axis = self.text[0]  # X+, X-, Y+, Y-, Z+, Z- formatından eksen harfini al
+            
+            # Lock kontrolü yap - lock edilmişse STOP komutu da gönderme
+            if hasattr(parent, 'axis_locked') and parent.axis_locked.get(axis, False):
+                print(f"❌ {axis} ekseni lock - {self.text} STOP komutu engellendi")
+                return  # Lock edilmişse STOP komutu da gönderme
+            
+            # Lock edilmemişse normal şekilde STOP komutu gönder
             if "X" in self.text:
                 parent.send_to_arduino("STOPX")
             elif "Y" in self.text:
                 parent.send_to_arduino("STOPY")
+            elif "Z" in self.text:
+                parent.send_to_arduino("STOPZ")
 
     def update_graphics(self, *args):
         self.bg_circle.pos = self.pos
@@ -368,13 +408,15 @@ class MainScreen(FloatLayout):
         usb_ports = glob.glob('/dev/tty.usb*') + glob.glob('/dev/cu.usb*') + glob.glob('/dev/tty.wch*') + glob.glob('/dev/cu.wch*')
         
         possible_ports = [
-            # ÖNCE BİLİNEN PORTLAR - Motor: 1110, Sensör: 1120
+            # ÖNCE BİLİNEN PORTLAR - Motor: 120, Sensör: 110
+            '/dev/cu.usbserial-11330',   # Sensör Arduino (JSON verisi)
+            '/dev/tty.usbserial-110',
             '/dev/cu.usbserial-1120',   # Sensör Arduino (JSON verisi)
             '/dev/cu.usbserial-1110',   # Motor Arduino (SWITCHES/MOTORS verisi)
             '/dev/tty.usbserial-1120',
             '/dev/tty.usbserial-1110',
             # Mac USB-Serial dönüştürücü portları
-            '/dev/tty.usbserial-120',
+            '/dev/tty.usbserial-120',    # TYPO DÜZELTİLDİ  
             '/dev/tty.usbmodem14101', 
             '/dev/cu.usbserial-120',
             '/dev/cu.usbmodem14101',
@@ -446,15 +488,20 @@ class MainScreen(FloatLayout):
         
         # Bağlantı durumu kontrolü
         if not self.sensor_arduino and not self.motor_arduino:
-            print("⚠️  Hiçbir Arduino bulunamadı!")
+            print("❌ HİÇBİR ARDUINO BULUNAMADI!")
+            print("   Mevcut portlar:", available_ports)
         elif not self.sensor_arduino:
             print("⚠️  Sensör Arduino bulunamadı!")
+            if self.motor_arduino:
+                print(f"   ✅ Motor Arduino bağlı: {self.motor_arduino.port}")
         elif not self.motor_arduino:
             print("⚠️  Motor Arduino bulunamadı!")
+            if self.sensor_arduino:
+                print(f"   ✅ Sensör Arduino bağlı: {self.sensor_arduino.port}")
         else:
             print(f"✅ Çift Arduino sistemi hazır:")
             print(f"   📊 Sensör: {self.sensor_arduino.port}")
-            print(f"   ⚙️  Motor: {self.motor_arduino.port}")
+            print(f"   ⚙️  Motor: {self.motor_arduino.port}") 
         
         # Eski serial_port değişkenini geriye uyumluluk için tut
         self.serial_port = self.sensor_arduino
@@ -472,6 +519,16 @@ class MainScreen(FloatLayout):
         self.sensor_data_buffer = deque(maxlen=50)  # Sensör veriler için
         self.motor_data_buffer = deque(maxlen=20)   # Motor feedback için
         self.serial_thread_running = True
+        
+        # BAĞLANTI DURUMU KONTROLÜ
+        self.last_connection_warning = 0  # Son uyarı zamanı
+        self.connection_warning_interval = 15  # 15 saniye
+        
+        # AXIS LOCK DURUMU - her eksen için lock durumunu takip et
+        self.axis_locked = {'X': False, 'Y': False, 'Z': False}
+        
+        # ADMIN SWITCH DURUMU - Admin modu açık/kapalı
+        self.admin_mode_active = True  # Başlangıçta aktif kabul et
         
         # FN KEY DURUMU - Fn tuşuna basılı tutulup tutulmadığını takip eder
         self.fn_key_pressed = False
@@ -491,12 +548,12 @@ class MainScreen(FloatLayout):
         # UI ELEMANLARI AYNI KALIYOR...
         YBP = 340  # Y Button Position
         XBP = 120   # X Button Position
-        self.add_widget(ArrowButton(direction='up', label_text='Z+', pos=(XBP, YBP + 60)))
-        self.add_widget(ArrowButton(direction='down', label_text='Z-', pos=(XBP, YBP - 60)))
+        self.add_widget(ArrowButton(direction='up', label_text='Y+', pos=(XBP, YBP + 60)))
+        self.add_widget(ArrowButton(direction='down', label_text='Y-', pos=(XBP, YBP - 60)))
         self.add_widget(ArrowButton(direction='left', label_text='X-', pos=(XBP-60, YBP)))
         self.add_widget(ArrowButton(direction='right', label_text='X+', pos=(XBP+60, YBP)))
-        self.add_widget(ArrowButton(direction='up', label_text='Y+', pos=(XBP + 440, YBP + 60)))
-        self.add_widget(ArrowButton(direction='down', label_text='Y-', pos=(XBP + 440   , YBP - 60)))
+        self.add_widget(ArrowButton(direction='up', label_text='Z+', pos=(XBP + 440, YBP + 60)))
+        self.add_widget(ArrowButton(direction='down', label_text='Z-', pos=(XBP + 440   , YBP - 60)))
 
         # Su terazisi
         self.terazi = GyroDisplay(size_hint=(None, None), size=(150, 150), pos=(310, 295))
@@ -528,6 +585,20 @@ class MainScreen(FloatLayout):
             text_size=(80, 20)
         )
         self.add_widget(self.fn_status_label)
+        
+        # ADMIN MODE STATUS LABEL - Ekranın üst kısmında
+        self.admin_status_label = Label(
+            text='🔓 OPERATOR MODE',
+            font_size=18,
+            font_name='RobotoMono-Regular',
+            pos=(300, 450),
+            size_hint=(None, None),
+            size=(200, 30),
+            color=(0.5, 1, 0.5, 1),  # Yeşil - aktif
+            halign='center',
+            text_size=(200, 30)
+        )
+        self.add_widget(self.admin_status_label)
 
         
         # PROTECTED BUTTONS - Fn ile korumalı butonlar
@@ -661,9 +732,9 @@ class MainScreen(FloatLayout):
         )
         self.add_widget(self.joystick_label)
 
-        # Step delay (hız) göstergesi
-        self.step_delay_label = Label(
-            text='Delay: 1000μs', 
+        # PWM Speed göstergesi
+        self.pwm_speed_label = Label(
+            text='PWM: 80', 
             font_size=12,
             font_name='RobotoMono-Regular',
             pos=(Motor_Info_X, Motor_Info_Y - 85),
@@ -673,7 +744,7 @@ class MainScreen(FloatLayout):
             halign='center',
             text_size=(110, 20)
         )
-        self.add_widget(self.step_delay_label)
+        self.add_widget(self.pwm_speed_label)
         self.add_widget(Label(
             text='ACCELEROMETER', 
             font_size=18,
@@ -741,7 +812,7 @@ class MainScreen(FloatLayout):
 
         # Speed label - orta alanda, butonların üstünde
         speed_label = Label(
-            text="Speed: min",
+            text="Speed: MIN",
             font_size=18,
             font_name='RobotoMono-Regular',
             pos=(330, 70),  # Butonların üstünde
@@ -837,8 +908,8 @@ class MainScreen(FloatLayout):
         # Arduino'lara test komutları gönder
         Clock.schedule_once(lambda dt: self.send_test_commands(), 2.0)
         
-        # Motor durum sorgusu - 3 saniye sonra
-        Clock.schedule_once(lambda dt: self.query_motor_status(), 3.0)
+        # Motor durum sorgusu ve enable - 3 saniye sonra
+        Clock.schedule_once(lambda dt: self.enable_all_motors(), 3.0)
     
     def send_test_commands(self):
         """Arduino'lara test komutları gönder"""
@@ -874,11 +945,7 @@ class MainScreen(FloatLayout):
                     consecutive_errors = 0
                     last_data_time = time.time()
                     
-                    print(f"📡 Sensör veri alındı: {len(chunk)} byte")
-                    if len(chunk) < 200:
-                        print(f"   İçerik: {chunk}")
-                    else:
-                        print(f"   İçerik (ilk 200): {chunk[:200]}...")
+                    # Sessiz veri alımı - sadece kritik durumlar için log
                     
                     # JSON parçalarını birleştirme algoritması
                     while True:
@@ -1001,34 +1068,10 @@ class MainScreen(FloatLayout):
                         except Exception as e:
                             print(f"❌ JSON işleme hatası: {e}")
                             continue
-                                
-                elif self.sensor_arduino:
-                    # Veri gelmediği durumda timeout kontrolü
-                    current_time = time.time()
-                    
-                    # Her 2 saniyede bir kontrol et
-                    if current_time - last_data_time > 2:
-                        print(f"⚠️  Sensör Arduino'dan {current_time - last_data_time:.1f} saniyedir veri gelmiyor")
-                        print(f"📊 Port: {self.sensor_arduino.port}, Açık: {self.sensor_arduino.is_open}, Bekleyen: {self.sensor_arduino.in_waiting}")
-                        
-                        # Buffer'ı kontrol et
-                        if self.sensor_arduino.in_waiting > 0:
-                            waiting_data = self.sensor_arduino.read(self.sensor_arduino.in_waiting).decode('utf-8', errors='ignore')
-                            print(f"📦 Buffer'da bekleyen veri var: {waiting_data[:200]}")
-                        
-                        # Test komutu gönder
-                        try:
-                            self.sensor_arduino.write(b'TEST\n')
-                            self.sensor_arduino.flush()
-                            print(f"📡 Sensör Arduino'ya TEST komutu gönderildi")
-                        except Exception as test_error:
-                            print(f"❌ TEST komutu gönderilemedi: {test_error}")
-                        
-                        last_data_time = current_time
-                    
+                                    
                     time.sleep(0.01)  # 10ms bekleme
                 else:
-                    print("⚠️  Sensör Arduino yok - bekleniyor...")
+                    # Sessizce bekle - ana thread'de 15 saniyede bir uyarı verilecek
                     time.sleep(1)
                     
             except Exception as e:
@@ -1090,7 +1133,7 @@ class MainScreen(FloatLayout):
                     import time
                     time.sleep(0.01)  # 10ms bekleme
                 else:
-                    print("⚠️  Motor Arduino yok - bekleniyor...")
+                    # Sessizce bekle - ana thread'de 15 saniyede bir uyarı verilecek
                     import time
                     time.sleep(1)
                     
@@ -1115,7 +1158,7 @@ class MainScreen(FloatLayout):
         while self.sensor_data_buffer and processed_count < max_per_frame:
             try:
                 line = self.sensor_data_buffer.popleft()
-                print(f"🔄 Sensör verisi işleniyor... Buffer: {len(self.sensor_data_buffer)} kalan")
+                # Sessiz işlem - sadece hata durumunda log
                 
                 # JSON parse et
                 data = json.loads(line)
@@ -1162,19 +1205,25 @@ class MainScreen(FloatLayout):
                 print(f"❌ Motor feedback işleme hatası: {e}")
                 motor_processed += 1
         
-        # Buffer durumu bilgisi
-        if len(self.sensor_data_buffer) > 25:  # Yarı kapasiteden fazlaysa uyar
-            print(f"⚠️  Sensör buffer dolmaya başladı: {len(self.sensor_data_buffer)}/50 veri bekliyor")
-        if len(self.motor_data_buffer) > 10:  # Yarı kapasiteden fazlaysa uyar
-            print(f"⚠️  Motor buffer dolmaya başladı: {len(self.motor_data_buffer)}/20 feedback bekliyor")
+        # Buffer durumu bilgisi - sadece kritik durumlarda
+        if len(self.sensor_data_buffer) > 40:  # %80 dolmuşsa uyar
+            print(f"⚠️  Sensör buffer kritik: {len(self.sensor_data_buffer)}/50")
+        if len(self.motor_data_buffer) > 15:  # %75 dolmuşsa uyar
+            print(f"⚠️  Motor buffer kritik: {len(self.motor_data_buffer)}/20")
             
-        # Bağlantı durumu kontrolü
-        if not self.sensor_arduino and not self.motor_arduino:
-            print(f"⚠️  Hiçbir Arduino bağlı değil - yeniden bağlanma denenecek")
-        elif not self.sensor_arduino:
-            print(f"⚠️  Sensör Arduino bağlı değil")
-        elif not self.motor_arduino:
-            print(f"⚠️  Motor Arduino bağlı değil")
+        # Bağlantı durumu kontrolü - 15 saniyede bir
+        import time
+        current_time = time.time()
+        if current_time - self.last_connection_warning > self.connection_warning_interval:
+            if not self.sensor_arduino and not self.motor_arduino:
+                print(f"❌ HİÇBİR ARDUINO BAĞLI DEĞİL!")
+                self.last_connection_warning = current_time
+            elif not self.motor_arduino:
+                print(f"❌ MOTOR ARDUINO BAĞLI DEĞİL - MOTORLAR ÇALIŞMAZ!")
+                self.last_connection_warning = current_time
+            elif not self.sensor_arduino:
+                print(f"❌ SENSÖR ARDUINO BAĞLI DEĞİL!")
+                self.last_connection_warning = current_time
 
     def process_motor_feedback(self, feedback_line):
         """Motor Arduino'sundan gelen feedback mesajlarını işle"""
@@ -1243,33 +1292,45 @@ class MainScreen(FloatLayout):
             except Exception as e:
                 print(f"❌ Joystick data parse hatası: {e}")
         
-        # Step delay (hız) değeri
-        elif feedback_line.startswith('STEP_DELAY:'):
+        # PWM hız değeri
+        elif feedback_line.startswith('PWM_SPEED:'):
             try:
-                delay_value = int(feedback_line.replace('STEP_DELAY:', ''))
-                self.step_delay_label.text = f'Delay: {delay_value}μs'
+                pwm_value = int(feedback_line.replace('PWM_SPEED:', ''))
                 
-                # Hız seviyesini belirle
-                if delay_value >= 2000:
+                # PWM değerine göre hız seviyesini belirle
+                if pwm_value <= 80:
                     speed_level = "MIN"
-                elif delay_value >= 1500:
+                elif pwm_value <= 120:
                     speed_level = "25%"
-                elif delay_value >= 1000:
+                elif pwm_value <= 160:
                     speed_level = "50%"
-                elif delay_value >= 600:
+                elif pwm_value <= 200:
                     speed_level = "75%"
                 else:
                     speed_level = "MAX"
                 
-                self.step_delay_label.text = f'{speed_level}: {delay_value}μs'
-                print(f"⚡ Hız seviyesi: {speed_level} ({delay_value}μs)")
+                # PWM değerini yüzde olarak hesapla
+                pwm_percent = int((pwm_value / 255) * 100)
+                
+                self.pwm_speed_label.text = f'{speed_level}: PWM {pwm_value} ({pwm_percent}%)'
+                print(f"🔥 PWM HIZ DEĞİŞTİ: {speed_level} - PWM {pwm_value}/255 ({pwm_percent}%)")
+                print(f"🔥 LED parlaklığı şimdi {pwm_percent}% olmalı!")
                 
             except Exception as e:
-                print(f"❌ Step delay parse hatası: {e}")
+                print(f"❌ PWM speed parse hatası: {e}")
         
         # Motor hareket onayları
         elif 'MOTOR_MOVED_' in feedback_line:
             print(f"✅ Motor hareketi onaylandı: {feedback_line}")
+        
+        # Motor disabled uyarısı
+        elif 'MOTOR_DISABLED_' in feedback_line:
+            axis = feedback_line.split('_')[-1]
+            print(f"❌ MOTOR DİSABLED: {axis} ekseni disabled - enable yapılması gerekiyor!")
+        
+        # Motor enable/disable onayları
+        elif '_ENABLED' in feedback_line or '_DISABLED' in feedback_line:
+            print(f"🔧 Motor enable durumu: {feedback_line}")
         
         # Hız değişikliği onayı
         elif 'SPEED_SET' in feedback_line:
@@ -1290,6 +1351,19 @@ class MainScreen(FloatLayout):
         # Admin switch kapalı uyarısı
         elif 'ADMIN_SWITCH_OFF' in feedback_line:
             print(f"⚠️  Admin switch kapalı!")
+        
+        # Admin modu açık/kapalı mesajları - Arduino'dan gelen
+        elif 'admin modu açık' in feedback_line.lower():
+            self.admin_mode_active = True
+            self.admin_status_label.text = '🔓 OPERATOR MODE'
+            self.admin_status_label.color = (0.5, 1, 0.5, 1)  # Yeşil
+            print(f"✅ ADMIN MODU AÇIK - Touchscreen aktif")
+        
+        elif 'admin modu kapalı' in feedback_line.lower():
+            self.admin_mode_active = False
+            self.admin_status_label.text = '🔒 VIEW MODE'
+            self.admin_status_label.color = (1, 0.3, 0.3, 1)  # Kırmızı
+            print(f"🔒 ADMIN MODU KAPALI - Touchscreen salt okunur")
         
         # Test yanıtı
         elif 'MOTOR_ARDUINO_TEST_OK' in feedback_line:
@@ -1552,6 +1626,32 @@ class MainScreen(FloatLayout):
                 btn.active_color = (0.6, 0.6, 0.6, 1)
                 btn.background_color = (0.6, 0.6, 0.6, 1)
 
+    def enable_all_motors(self):
+        """Tüm motorları enable yap"""
+        print("🚀 Tüm motorları enable yapılıyor...")
+        if self.motor_arduino:
+            try:
+                # Tüm motorları enable yap
+                self.motor_arduino.write(b'ENABLE_X\n')
+                self.motor_arduino.flush()
+                print("✅ X motoru enable edildi")
+                
+                self.motor_arduino.write(b'ENABLE_Y\n')
+                self.motor_arduino.flush()
+                print("✅ Y motoru enable edildi")
+                
+                self.motor_arduino.write(b'ENABLE_Z\n')
+                self.motor_arduino.flush()
+                print("✅ Z motoru enable edildi")
+                
+                # Durum sorgusu da yap
+                self.query_motor_status()
+                
+            except Exception as e:
+                print(f"❌ Motor enable hatası: {e}")
+        else:
+            print("❌ Motor Arduino bağlı değil - enable yapılamıyor")
+
     def query_motor_status(self):
         """Motor Arduino'dan switch durumlarını sorgula"""
         if self.motor_arduino:
@@ -1610,6 +1710,15 @@ class MainScreen(FloatLayout):
             Clock.schedule_once(lambda dt: setattr(instance, 'text', 'Test\nData'), 2)
 
     def on_mult_button(self, instance):
+        # ADMIN MODE KONTROLÜ
+        if not self.admin_mode_active:
+            print(f"❌ ADMIN MODU KAPALI - Hız değiştirme engellendi")
+            # Buton durumunu eski haline döndür
+            for btn in self.mult_buttons:
+                if btn.state == 'down':
+                    return  # Zaten seçili olan butonu koru
+            return
+        
         self.speed_label.text = f"Speed: {instance.text}"
         for btn in self.mult_buttons:
             btn.state = 'normal'
@@ -1618,6 +1727,12 @@ class MainScreen(FloatLayout):
 
     def on_axis_toggle(self, instance, value):
         """Axis unlock/lock toggle - Sadece Fn tuşu basılıyken çalışır"""
+        # ADMIN MODE KONTROLÜ
+        if not self.admin_mode_active:
+            print(f"❌ ADMIN MODU KAPALI - Axis toggle engellendi")
+            instance.state = 'normal'  # Toggle durumunu geri al
+            return
+        
         if not self.fn_key_pressed:
             instance.state = 'normal'  # Toggle durumunu geri al
             return
@@ -1625,11 +1740,20 @@ class MainScreen(FloatLayout):
         if value == 'down':
             axis = instance.text.replace("Unlock ", "").replace("Lock ", "")
             instance.text = f"Lock {axis}"
+            self.axis_locked[axis] = True  # Lock durumunu güncelle
             self.send_to_arduino(f"l{axis}")
+            print(f"🔒 {axis} ekseni lock edildi")
         else:
             axis = instance.text.replace("Lock ", "").replace("Unlock ", "")
             instance.text = f"Unlock {axis}"
+            self.axis_locked[axis] = False  # Unlock durumunu güncelle
             self.send_to_arduino(f"ul{axis}")
+            print(f"🔓 {axis} ekseni unlock edildi")
+            
+        # Lock status labellarını güncelle
+        for i, ax in enumerate(['X', 'Y', 'Z']):
+            status = "locked" if self.axis_locked[ax] else "unlocked"
+            self.lock_status_labels[i].text = f"{ax}: {status}"
 
     def send_to_arduino(self, message):
         """Arduino'ya mesaj gönder - Motor komutları motor Arduino'suna, diğerleri sensör Arduino'suna"""
@@ -1639,10 +1763,16 @@ class MainScreen(FloatLayout):
             speed_commands = ['SMIN', 'S%25', 'S%50', 'S%75', 'SMAX']
             axis_commands = ['lX', 'lY', 'lZ', 'ulX', 'ulY', 'ulZ']  # lock/unlock commands
             
+            # Debug: Speed command kontrolü
+            is_speed_command = any(message.startswith(cmd) for cmd in speed_commands)
+            if is_speed_command:
+                original_print(f"🔥 SPEED COMMAND DETECTED: {message}")
+                original_print(f"🔥 Motor Arduino connected: {self.motor_arduino is not None}")
+            
             # Hangi Arduino'ya gönderileceğini belirle
             is_motor_command = (
                 message in motor_commands or 
-                any(message.startswith(cmd) for cmd in speed_commands) or
+                is_speed_command or
                 message in axis_commands
             )
             
@@ -1668,8 +1798,12 @@ class MainScreen(FloatLayout):
                 
             elif is_motor_command and not self.motor_arduino:
                 original_print(f"⚠️  Motor Arduino bağlı değil - komut gönderilemedi: {message}")
-                # Fallback: Sensör Arduino'ya gönder
-                if self.sensor_arduino:
+                # Speed komutları için fallback YAPMA - sadece hata ver
+                if is_speed_command:
+                    original_print(f"❌ SPEED COMMAND FAILED: Motor Arduino required for {message}")
+                    return
+                # Diğer motor komutları için fallback
+                elif self.sensor_arduino:
                     original_print(f"🔄 Fallback: Sensör Arduino'ya motor komutu gönderiliyor...")
                     try:
                         self.sensor_arduino.write((message + '\n').encode())
