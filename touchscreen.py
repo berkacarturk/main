@@ -14,7 +14,7 @@ from kivy.uix.slider import Slider # type: ignore
 # Pencere boyutunu 800x480 olarak ayarla
 Config.set('graphics', 'width', '800')
 Config.set('graphics', 'height', '480')
-Config.set('graphics', 'resizable', False)
+Config.set('graphics', 'resizable', True)  # Aspect ratio korunarak resize edilebilir
 Config.write()
 import serial # type: ignore
 import json 
@@ -206,7 +206,6 @@ class ArrowButton(Button):
             parent.send_to_arduino(f"{self.text}")
 
     def reset_button_color(self):
-        """Buton rengini normale döndür"""
         with self.canvas.before:
             from kivy.graphics import Color
             Color(0.2, 0.4, 0.7)  # Modern mavi (normal renk)
@@ -392,6 +391,11 @@ class ColoredToggleButton(ToggleButton):
 class MainScreen(FloatLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        
+        # ASPECT RATIO KONTROLÜ - Pencere boyutu 800x480 (5:3 oranı) korunur
+        self.aspect_ratio = 800.0 / 480.0  # 5:3 aspect ratio
+        Window.bind(size=self._maintain_aspect_ratio)
+        
         with self.canvas.before:
             Color(0.1, 0.15, 0.25, 1)  # Koyu lacivert arka plan
             Rectangle(size=(800, 480), pos=(0, 0))
@@ -441,7 +445,7 @@ class MainScreen(FloatLayout):
             print(f"🔍 Toplam {len(possible_ports)} port taranacak, {len(available_ports)} port mevcut")
             print(f"📋 Mevcut portlar: {available_ports}")
         
-        # ÇİFT ARDUINO SİSTEMİ - Basit port ataması
+        # ÇİFT ARDUINO SİSTEMİ - Veri tipine göre akıllı tanıma
         sensor_arduino_found = False
         motor_arduino_found = False
         
@@ -457,7 +461,7 @@ class MainScreen(FloatLayout):
                 test_port = serial.Serial(
                     port=port, 
                     baudrate=9600, 
-                    timeout=1,
+                    timeout=2,  # Veri okumak için biraz daha uzun timeout
                     write_timeout=1
                 )
                 print(f"✅ Port açıldı: {port}")
@@ -467,20 +471,52 @@ class MainScreen(FloatLayout):
                 test_port.reset_output_buffer()
                 time.sleep(0.5)
                 
-                # Basit tanıma: İlk port = Sensör, İkinci port = Motor
-                if not sensor_arduino_found:
-                    self.sensor_arduino = test_port
-                    sensor_arduino_found = True
-                    print(f"📊 SENSÖR Arduino atandı: {port}")
-                    
-                elif not motor_arduino_found:
-                    self.motor_arduino = test_port
-                    motor_arduino_found = True
-                    print(f"⚙️  MOTOR Arduino atandı: {port}")
-                    
+                # Arduino'dan gelen veriyi kontrol et
+                data_sample = ""
+                for _ in range(5):  # 5 satır oku
+                    if test_port.in_waiting > 0:
+                        try:
+                            line = test_port.readline().decode('utf-8', errors='ignore').strip()
+                            data_sample += line + " "
+                        except:
+                            pass
+                    time.sleep(0.2)
+                
+                print(f"📄 Port {port} veri örneği: {data_sample[:100]}...")
+                
+                # JSON içeriyorsa SENSÖR Arduino
+                if '{' in data_sample and ('"temperature' in data_sample or '"gyro' in data_sample or '"accel' in data_sample):
+                    if not sensor_arduino_found:
+                        self.sensor_arduino = test_port
+                        sensor_arduino_found = True
+                        print(f"📊 SENSÖR Arduino tespit edildi (JSON verisi): {port}")
+                    else:
+                        print(f"⚠️  Fazla sensör Arduino - kapatılıyor: {port}")
+                        test_port.close()
+                        
+                # ENABLE_STATUS, MOTORS, admin içeriyorsa MOTOR Arduino
+                elif 'ENABLE_STATUS' in data_sample or 'MOTORS:' in data_sample or 'admin modu' in data_sample or 'PWM_SPEED' in data_sample:
+                    if not motor_arduino_found:
+                        self.motor_arduino = test_port
+                        motor_arduino_found = True
+                        print(f"⚙️  MOTOR Arduino tespit edildi (feedback verisi): {port}")
+                    else:
+                        print(f"⚠️  Fazla motor Arduino - kapatılıyor: {port}")
+                        test_port.close()
+                        
+                # Veri tipi belirsiz - sırayla ata
                 else:
-                    print(f"❌ Fazla port - kapatılıyor: {port}")
-                    test_port.close()
+                    if not sensor_arduino_found:
+                        self.sensor_arduino = test_port
+                        sensor_arduino_found = True
+                        print(f"📊 SENSÖR Arduino atandı (varsayılan): {port}")
+                    elif not motor_arduino_found:
+                        self.motor_arduino = test_port
+                        motor_arduino_found = True
+                        print(f"⚙️  MOTOR Arduino atandı (varsayılan): {port}")
+                    else:
+                        print(f"❌ Fazla port - kapatılıyor: {port}")
+                        test_port.close()
                     
             except Exception as e:
                 print(f"❌ Port hatası {port}: {e}")
@@ -508,10 +544,7 @@ class MainScreen(FloatLayout):
         
         with self.canvas.before:
             Color(0.05, 0.1, 0.2, 1)  # Daha koyu mavi tonları
-            Rectangle(pos=(0, 240), size=(800, 230))
-            Rectangle(pos=(620, 0), size=(180, 440))
-            Rectangle(pos=(0, 0), size=(120, 440))
-            Rectangle(pos=(0, 0), size=(800, 90), color=(0.2, 0.4, 0.8, 1))  # Mavi başlık
+            Rectangle ( pos=(20, 100), size=(760, 140), color=(0.2, 0.4, 0.8, 1))  # Mavi başlık
 
 
 
@@ -545,46 +578,34 @@ class MainScreen(FloatLayout):
         self.max_detector_y = 0
         self.max_detector_z = 0
 
-        # UI ELEMANLARI AYNI KALIYOR...
+        # UI ELEMANLARI AYNI KALIYOR..
         YBP = 340  # Y Button Position
         XBP = 120   # X Button Position
         self.add_widget(ArrowButton(direction='up', label_text='Y+', pos=(XBP, YBP + 60)))
         self.add_widget(ArrowButton(direction='down', label_text='Y-', pos=(XBP, YBP - 60)))
         self.add_widget(ArrowButton(direction='left', label_text='X-', pos=(XBP-60, YBP)))
         self.add_widget(ArrowButton(direction='right', label_text='X+', pos=(XBP+60, YBP)))
-        self.add_widget(ArrowButton(direction='up', label_text='Z+', pos=(XBP + 440, YBP + 60)))
-        self.add_widget(ArrowButton(direction='down', label_text='Z-', pos=(XBP + 440   , YBP - 60)))
+        self.add_widget(ArrowButton(direction='up', label_text='Z+', pos=(XBP + 445, YBP + 60)))
+        self.add_widget(ArrowButton(direction='down', label_text='Z-', pos=(XBP + 445   , YBP - 60)))
 
         # Su terazisi
-        self.terazi = GyroDisplay(size_hint=(None, None), size=(150, 150), pos=(310, 295))
+        self.terazi = GyroDisplay(size_hint=(None, None), size=(150, 150), pos=(335, 295))
         self.add_widget(self.terazi)
 
         RIBP = 650
         
         # FN BUTTON - Sol alt köşede
         self.fn_button = ColoredToggleButton(
-            text='Fn',
-            size=(80, 50),
+            text='Calibration Mode\nOFF',
+            size=(140, 40),
             pos=(20, 20),  # Sol alt köşe
-            font_size=20,
+            font_size=14,
             group=None  # Grup dışı - bağımsız toggle
         )
         self.fn_button.bind(state=self.on_fn_toggle)
         self.add_widget(self.fn_button)
         
-        # FN STATUS LABEL
-        self.fn_status_label = Label(
-            text='Fn: OFF',
-            font_size=14,
-            font_name='RobotoMono-Regular',
-            pos=(20, 75),
-            size_hint=(None, None),
-            size=(80, 20),
-            color=(1, 0.5, 0.5, 1),
-            halign='center',
-            text_size=(80, 20)
-        )
-        self.add_widget(self.fn_status_label)
+        
         
         # ADMIN MODE STATUS LABEL - Ekranın üst kısmında
         self.admin_status_label = Label(
@@ -601,27 +622,29 @@ class MainScreen(FloatLayout):
         self.add_widget(self.admin_status_label)
 
         
-        # PROTECTED BUTTONS - Fn ile korumalı butonlar
+        # PROTECTED BUTTONS - Fn ile korumalı butonlar (başlangıçta görünmez)
         self.calibrate_btn = Button(
             text='Calibrate\nGyro',
             font_size=16,
-            pos=(RIBP, 10),
+            pos=(30, 120),
             size_hint=(None, None),
-            size=(100, 50),
+            size=(90, 40),
             background_color=(0.6, 0.6, 0.6, 1),  # Başlangıçta gri (disabled)
-            disabled=True
+            disabled=True,
+            opacity=0  # Başlangıçta görünmez
         )
         self.calibrate_btn.bind(on_press=self.calibrate_gyro)
         self.add_widget(self.calibrate_btn)
 
         self.reset_max_btn = Button(
-            text='Reset\nMax Values',
-            font_size=15,
-            pos=(RIBP, 58),
+            text='Reset Max',
+            font_size=16,
+            pos=(30, 180),
             size_hint=(None, None),
-            size=(100, 50),
+            size=(90, 40),
             background_color=(0.6, 0.6, 0.6, 1),  # Başlangıçta gri (disabled)
-            disabled=True
+            disabled=True,
+            opacity=0  # 
         )
         self.reset_max_btn.bind(on_press=self.reset_max_values)
         self.add_widget(self.reset_max_btn)
@@ -629,9 +652,9 @@ class MainScreen(FloatLayout):
    
 
         # ÜSTTE SİYAH ALANDA - Ana sensör bilgileri (y: 280-480)
-        Sensor_X = 130 # sensor X ekseni posisyonu
-        Sensor_Y = 200 # sensor Y ekseni posisyonu
-        Platform_X = 420 # platform X ekseni posisyonu (450'den 420'ye)
+        Sensor_X = 160 # sensor X ekseni posisyonu
+        Sensor_Y = 200  # sensor Y ekseni posisyonu
+        Platform_X = 450 # platform X ekseni posisyonu (450'den 420'ye)
         Platform_Y = 200 # platform Y ekseni posisyonu
 
         self.temp_label = Label(
@@ -677,81 +700,13 @@ class MainScreen(FloatLayout):
         Motor_Info_X = 10   # Motor bilgileri X pozisyonu
         Motor_Info_Y = 400  # Motor bilgileri Y pozisyonu (alttan başla)
 
-        # Motor durumu başlığı
-        self.add_widget(Label(
-            text='MOTOR STATUS', 
-            font_size=16,
-            font_name='RobotoMono-Regular',
-            pos=(Motor_Info_X, Motor_Info_Y),
-            size_hint=(None, None), 
-            size=(110, 20),
-            color=(1, 1, 1, 1),
-            halign='center',
-            text_size=(110, 20)
-        ))
-
-        # Fren switch durumları
-        self.brake_switches_label = Label(
-            text='Fren: X✓ Y✓ Z✓', 
-            font_size=12,
-            font_name='RobotoMono-Regular',
-            pos=(Motor_Info_X, Motor_Info_Y - 25),
-            size_hint=(None, None), 
-            size=(110, 20),
-            color=(1, 1, 0.5, 1),  # Sarı
-            halign='center',
-            text_size=(110, 20)
-        )
-        self.add_widget(self.brake_switches_label)
-
-        # Motor enable durumları
-        self.motor_enable_label = Label(
-            text='Motor: X- Y- Z-', 
-            font_size=12,
-            font_name='RobotoMono-Regular',
-            pos=(Motor_Info_X, Motor_Info_Y - 45),
-            size_hint=(None, None), 
-            size=(110, 20),
-            color=(0.8, 0.8, 0.8, 1),  # Açık gri
-            halign='center',
-            text_size=(110, 20)
-        )
-        self.add_widget(self.motor_enable_label)
-
-        # Joystick değerleri
-        self.joystick_label = Label(
-            text='Joy: x=512 y=512', 
-            font_size=12,
-            font_name='RobotoMono-Regular',
-            pos=(Motor_Info_X, Motor_Info_Y - 65),
-            size_hint=(None, None), 
-            size=(110, 20),
-            color=(0.5, 1, 0.8, 1),  # Açık yeşil
-            halign='center',
-            text_size=(110, 20)
-        )
-        self.add_widget(self.joystick_label)
-
-        # PWM Speed göstergesi
-        self.pwm_speed_label = Label(
-            text='PWM: 80', 
-            font_size=12,
-            font_name='RobotoMono-Regular',
-            pos=(Motor_Info_X, Motor_Info_Y - 85),
-            size_hint=(None, None), 
-            size=(110, 20),
-            color=(1, 0.8, 0.5, 1),  # Turuncu
-            halign='center',
-            text_size=(110, 20)
-        )
-        self.add_widget(self.pwm_speed_label)
         self.add_widget(Label(
             text='ACCELEROMETER', 
             font_size=18,
             font_name='RobotoMono-Regular',
             pos=(Platform_X, Platform_Y),
             size_hint=(None, None), 
-            size=(200, 25),
+            size=(280, 25),
             color=(1, 1, 1, 1),
             halign='center',
             text_size=(200, 25)
@@ -791,7 +746,7 @@ class MainScreen(FloatLayout):
             pos=(Platform_X - 35, Platform_Y - 70),
             size_hint=(None, None),
             size=(320, 25),  # Genişlik 250→320 (alan büyütüldü)
-            color=(1, 1, 0, 1),
+            color=(0.5, 1, 0.5, 1),
             halign='center',
             valign='middle'
         )
@@ -804,7 +759,7 @@ class MainScreen(FloatLayout):
             pos=(Platform_X - 35, Platform_Y - 90),
             size_hint=(None, None),
             size=(320, 25),  # Genişlik 250→320 (alan büyütüldü)
-            color=(1, 1, 0, 1),
+            color=(0.5, 1, 0.5, 1),
             halign='center',
             valign='middle'
         )
@@ -817,7 +772,7 @@ class MainScreen(FloatLayout):
             font_name='RobotoMono-Regular',
             pos=(330, 70),  # Butonların üstünde
             size_hint=(None, None),
-            size=(140, 10),
+            size=(140, 25),
             color=(1, 1, 1, 1),
             halign='center',
             text_size=(140, 30)
@@ -837,7 +792,7 @@ class MainScreen(FloatLayout):
             btn = ColoredToggleButton(
                 text=label,
                 size=(60, 40),
-                pos=(start_x + idx * 70, 10),  # Y pozisyonunu da ortaya getir
+                pos=(start_x + idx * 70, 20),  # Y pozisyonunu da ortaya getir
                 font_size=20,
                 group="mult"
             )
@@ -846,22 +801,35 @@ class MainScreen(FloatLayout):
             self.add_widget(btn)
         self.mult_buttons[0].state = 'down'
 
-        # ENABLE STATUS LABELS - Motor Arduino'dan gelen enable durumlarını göster
-        # Butonlar YOK - Sadece görüntüleme
+        # ENABLE STATUS LABELS - Motor Arduino'dan gelen enable durumlarını göster (buton stili)
         self.lock_status_labels = []
         axis_names = ['X', 'Y', 'Z']
         for i, axis in enumerate(axis_names):
-            lbl = Label(
-                text=f"{axis}: 🔓 Enabled",
+            # Button kullan ama disabled yap (sadece görünüm için)
+            lbl = Button(
+                text=f"{axis}: UNLOCKED",
                 font_size=18,
                 font_name='RobotoMono-Regular',
-                pos=(RIBP, 280 + i * 60),
+                pos=(RIBP - 10, 280 + i * 69),
                 size_hint=(None, None),
                 size=(150, 40),
-                color=(0.5, 1, 0.5, 1),  # Yeşil - enabled
-                halign='center',
-                text_size=(150, 40)
+                background_normal='',
+                background_color=(0.2, 0.6, 0.2, 1),  # Yeşil arka plan (hafif transparan)
+                color=(0.5, 1, 0.5, 1),  # Yeşil text
+                disabled=True,  
+                disabled_color=(0.5, 1, 0.5, 1)  # Disabled olduğunda da aynı renk
             )
+            # Border için canvas ekle
+            with lbl.canvas.before:
+                Color(0.5, 1, 0.5, 1)  # Yeşil border
+                lbl.border_line = Line(rectangle=(lbl.x, lbl.y, lbl.width, lbl.height), width=2)
+            
+            # Position değiştiğinde border'ı da güncelle
+            def update_border(instance, *args):
+                if hasattr(instance, 'border_line'):
+                    instance.border_line.rectangle = (instance.x, instance.y, instance.width, instance.height)
+            lbl.bind(pos=update_border, size=update_border)
+            
             self.lock_status_labels.append(lbl)
             self.add_widget(lbl)
 
@@ -1222,18 +1190,33 @@ class MainScreen(FloatLayout):
                     key, value = item.split('=')
                     enables[key] = value == '1'
                 
-                # Label'ları güncelle - Enable=1 -> Enabled (yeşil), Enable=0 -> Disabled (kırmızı)
+                # Label'ları (Button) güncelle - Enable=1 -> Unlocked (yeşil), Enable=0 -> Locked (kırmızı)
                 axis_names = ['X', 'Y', 'Z']
                 for i, axis in enumerate(axis_names):
                     is_enabled = enables.get(axis, False)
+                    btn = self.lock_status_labels[i]
                     if is_enabled:
-                        self.lock_status_labels[i].text = f"{axis}: 🔓 Enabled"
-                        self.lock_status_labels[i].color = (0.5, 1, 0.5, 1)  # Yeşil
+                        btn.text = f"{axis}:  UNLOCKED"
+                        btn.color = (0.5, 1, 0.5, 1)  # Yeşil text
+                        btn.disabled_color = (0.5, 1, 0.5, 1)  # Yeşil text (disabled)
+                        btn.background_color = (0.2, 0.4, 0.7)  # Yeşil arka plan
+                        # Border rengini güncelle
+                        if hasattr(btn, 'border_line'):
+                            with btn.canvas.before:
+                                from kivy.graphics import Color
+                                Color(0.5, 1, 0.5, 1)  # Yeşil border
                     else:
-                        self.lock_status_labels[i].text = f"{axis}: 🔒 Disabled"
-                        self.lock_status_labels[i].color = (1, 0.3, 0.3, 1)  # Kırmızı
+                        btn.text = f"{axis}:  LOCKED"
+                        btn.color = (1, 0.3, 0.3, 1)  # Kırmızı text
+                        btn.disabled_color = (1, 0.3, 0.3, 1)  # Kırmızı text (disabled)
+                        btn.background_color = (0.6, 0.2, 0.2, 0.3)  # Kırmızı arka plan
+                        # Border rengini güncelle
+                        if hasattr(btn, 'border_line'):
+                            with btn.canvas.before:
+                                from kivy.graphics import Color
+                                Color(1, 0.3, 0.3, 1)  # Kırmızı border
                 
-                print(f"🔐 Enable durumları güncellendi: X={enables.get('X')}, Y={enables.get('Y')}, Z={enables.get('Z')}")
+                print(f"🔐 Enable durumları güncellendi: X={enables.get('X', False)}, Y={enables.get('Y', False)}, Z={enables.get('Z', False)}")
                 
             except Exception as e:
                 print(f"❌ ENABLE_STATUS parse hatası: {e}")
@@ -1251,7 +1234,7 @@ class MainScreen(FloatLayout):
                 x_brake = "✓" if switches.get('xFren', False) else "✗"
                 y_brake = "✓" if switches.get('yFren', False) else "✗"
                 z_brake = "✓" if switches.get('zFren', False) else "✗"
-                self.brake_switches_label.text = f'Fren: X{x_brake} Y{y_brake} Z{z_brake}'
+                self.brake_switches_label.text = f'Fren: X{x_brake} Y{y_brake} Z{z_brake}'""""""
                 
             except Exception as e:
                 print(f"❌ Switch data parse hatası: {e}")
@@ -1599,25 +1582,29 @@ class MainScreen(FloatLayout):
         """Fn tuşu durumunu değiştir ve korumalı butonları etkinleştir/devre dışı bırak"""
         if value == 'down':
             self.fn_key_pressed = True
-            self.fn_status_label.text = 'Fn: ON'
-            self.fn_status_label.color = (0.5, 1, 0.5, 1)  # Yeşil
+            self.fn_button.text = 'Calibration Mode\nON'
             
-            # Korumalı butonları etkinleştir
+            # Korumalı butonları görünür ve etkin yap
+            self.calibrate_btn.opacity = 1  # Görünür yap
             self.calibrate_btn.disabled = False
             self.calibrate_btn.background_color = (0.2, 0.6, 0.2, 1)  # Yeşil
             
+            self.reset_max_btn.opacity = 1  # Görünür yap
             self.reset_max_btn.disabled = False 
             self.reset_max_btn.background_color = (0.8, 0.2, 0.2, 1)  # Kırmızı
             
         else:
             self.fn_key_pressed = False
-            self.fn_status_label.text = 'Fn: OFF'
-            self.fn_status_label.color = (1, 0.5, 0.5, 1)  # Kırmızı
+            self.fn_button.text = 'Calibration Mode\nOFF'
+        
             
-            # Korumalı butonları devre dışı bırak
+            
+            # Korumalı butonları tamamen gizle
+            self.calibrate_btn.opacity = 0  # Görünmez yap
             self.calibrate_btn.disabled = True
             self.calibrate_btn.background_color = (0.6, 0.6, 0.6, 1)  # Gri
             
+            self.reset_max_btn.opacity = 0  # Görünmez yap
             self.reset_max_btn.disabled = True
             self.reset_max_btn.background_color = (0.6, 0.6, 0.6, 1)  # Gri
 
@@ -1719,6 +1706,26 @@ class MainScreen(FloatLayout):
             btn.state = 'normal'
         instance.state = 'down'
         self.send_to_arduino(f"S{instance.text}")
+
+    def _maintain_aspect_ratio(self, instance, value):
+        """Pencere boyutu değiştiğinde aspect ratio'yu koru (5:3 = 800x480)"""
+        # Yeni genişlik ve yükseklik
+        new_width, new_height = value
+        
+        # Hedef aspect ratio'ya göre doğru boyutu hesapla
+        target_aspect = self.aspect_ratio
+        current_aspect = new_width / new_height if new_height > 0 else target_aspect
+        
+        if abs(current_aspect - target_aspect) > 0.01:  # Küçük farklılıkları tolere et
+            # Aspect ratio bozulmuş, düzelt
+            if current_aspect > target_aspect:
+                # Pencere çok geniş, yüksekliğe göre genişliği ayarla
+                corrected_width = int(new_height * target_aspect)
+                Window.size = (corrected_width, new_height)
+            else:
+                # Pencere çok dar, genişliğe göre yüksekliği ayarla
+                corrected_height = int(new_width / target_aspect)
+                Window.size = (new_width, corrected_height)
 
     def send_to_arduino(self, message):
         """Arduino'ya mesaj gönder - Motor komutları motor Arduino'suna, diğerleri sensör Arduino'suna"""
